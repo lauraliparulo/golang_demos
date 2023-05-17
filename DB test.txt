@@ -1,0 +1,110 @@
+
+import (
+	"database/sql"
+	"log"
+	"time"
+
+	"bitbucket.org/fleetpool/sw6-bridge/client"
+	"bitbucket.org/fleetpool/sw6-bridge/config"
+	"bitbucket.org/fleetpool/sw6-bridge/container"
+	"bitbucket.org/fleetpool/sw6-bridge/database"
+	"bitbucket.org/fleetpool/sw6-bridge/dto"
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/adjust/rmq/v5"
+	"github.com/h2non/gock"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+)
+
+const TEST_SERVER_URL = "http://localhost"
+
+const SALES_CHANNEL_ID = 743847843834
+const INSTANCE_MEE_ID = 2738248
+const INSTANCE_SHOP_ID = 43784387
+const ORDER_ID = "12345"
+const CUSTOMER_ID = "843957869"
+const SHOP_ID = "3849394883"
+
+const API_KEY = "api_key"
+const SECRET_KEY = "secret_key"
+const TIMESTAMP = "12-10-2022-08:29:23"
+const SHOP_SECRET = "shop secret"
+
+func InitializeDBMock() (*gorm.DB, *sql.DB, sqlmock.Sqlmock) {
+	var mock sqlmock.Sqlmock
+	var dbObject *gorm.DB
+	var err error
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		log.Fatalf("Failed to open mock sql db, got error: %v", err)
+	}
+	if db == nil {
+		log.Fatalf("mock db is null")
+	}
+	if mock == nil {
+		log.Fatalf("sqlmock is null")
+	}
+
+	dialector := mysql.New(mysql.Config{
+		DSN:                       "sqlmock_db_0",
+		DriverName:                "mysql",
+		Conn:                      db,
+		SkipInitializeWithVersion: true,
+	})
+
+	dbObject, err = gorm.Open(dialector, &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Dialector fail -  to open mock sql db, got error: %v", err)
+	}
+
+	return dbObject, db, mock
+}
+
+func InitializeContainer(dbObject *gorm.DB) *container.Container {
+	testConn := rmq.NewTestConnection()
+	container := container.NewContainer(testConn, database.NewRepository(dbObject), nil)
+	container.Config = &config.Config{}
+
+	return container
+}
+
+func mockPostOauthTokenRequestForShopwareApiClient(c *client.ShopwareApiClient) {
+	gock.InterceptClient(c.HttpClient.HTTPClient)
+	gock.New(TEST_SERVER_URL).
+		Post("/api/oauth/token").
+		Reply(200).
+		JSON(map[string]interface{}{
+			"access_token":  "token",
+			"token_type":    "bearer",
+			"refresh_token": "refresh_token",
+			"expires_in":    time.Now().Add(time.Hour * 1).Unix(),
+		})
+}
+
+func mockGetCustomerDetailsForShopwareApiClient(c *client.ShopwareApiClient) {
+	mockPostOauthTokenRequestForShopwareApiClient(c)
+
+	gock.New(TEST_SERVER_URL).Get("/api/customer/" + CUSTOMER_ID).Reply(200).JSON(client.CustomerDetailsResponse{
+		Data: dto.CustomerDetails{
+			SalutationId:             "1111",
+			DefaultPaymentMethodId:   "abc",
+			DefaultBillingAddressId:  "1234",
+			DefaultShippingAddressId: "1234",
+		},
+	})
+	gock.New(TEST_SERVER_URL).Get("/api/salutation").Reply(200).JSON(client.SalutationResponse{
+		Data: []dto.Salutation{
+			{
+				Id:            "1111",
+				SalutationKey: "mr",
+				DisplayName:   "Mr",
+				LetterName:    "Mr",
+			},
+		},
+	})
+	gock.New(TEST_SERVER_URL).Get("/api/customer-address/1234").Reply(200).JSON(map[string]interface{}{})
+}
+
+-----------------------------------------------------------------------------------------------------------------------------
+
